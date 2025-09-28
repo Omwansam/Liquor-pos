@@ -1,0 +1,153 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined');
+@import "tailwindcss";
+
+/* Base styles */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  width: 100vw;
+  overflow-x: hidden;
+  font-family: "Manrope", system-ui, Avenir, Helvetica, Arial, sans-serif;
+  background-color: #101322;
+  color: #ffffff;
+}
+
+/* Dark theme by default */
+.dark {
+  background-color: #101322;
+  color: #ffffff;
+}
+
+/* Glassmorphism Effect */
+.glassmorphism {
+  background: rgba(17, 19, 34, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Form Input Styles */
+.form-input {
+  background-color: #1a1d2e;
+  border: 1px solid #2a2e45;
+  color: #e0e0e0;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+}
+
+.form-input::placeholder {
+  color: #6b7280;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #0d27a5;
+  box-shadow: 0 0 0 3px rgba(13, 39, 165, 0.1);
+}
+
+/* Select Dropdown Styles */
+.form-select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='2' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19.5 8.25l-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 1rem center;
+  background-size: 1.5em;
+}
+
+/* Custom utility classes */
+.font-display {
+  font-family: "Manrope", sans-serif;
+}
+
+.bg-background-dark {
+  background-color: #101322;
+}
+
+.bg-background-light {
+  background-color: #f6f6f8;
+}
+
+.text-primary {
+  color: #0d27a5;
+}
+
+.bg-primary {
+  background-color: #0d27a5;
+}
+
+.border-primary {
+  border-color: #0d27a5;
+}
+
+.focus\:ring-primary:focus {
+  --tw-ring-color: #0d27a5;
+}
+
+.focus\:border-primary:focus {
+  border-color: #0d27a5;
+}
+
+/* Material Icons */
+.material-symbols-outlined {
+  font-variation-settings:
+  'FILL' 0,
+  'wght' 400,
+  'GRAD' 0,
+  'opsz' 24
+}
+
+/* Remove default button styles */
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* Ensure proper text rendering */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-weight: inherit;
+}
+
+/* Remove default list styles */
+ul, ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Ensure images are responsive */
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1d2e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2e45;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3e55;
+}
