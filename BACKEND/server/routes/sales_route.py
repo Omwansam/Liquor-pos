@@ -14,11 +14,32 @@ def get_current_user():
         return current_identity.get('id')
     return current_identity
 
+def get_current_user_info():
+    """Helper function to get current user info including role from JWT"""
+    from flask_jwt_extended import get_jwt
+    current_identity = get_jwt_identity()
+    claims = get_jwt()
+    
+    user_id = None
+    if isinstance(current_identity, dict):
+        user_id = current_identity.get('id')
+    else:
+        user_id = current_identity
+    
+    return {
+        'id': user_id,
+        'role': claims.get('role', 'EMPLOYEE'),
+        'is_admin': claims.get('is_admin', False)
+    }
+
 @sales_bp.route('/sales', methods=['GET'])
 @jwt_required()
 def get_sales():
     """Get all sales with pagination and filtering"""
     try:
+        # Get current user info
+        current_user = get_current_user_info()
+        
         # Get query parameters
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 20, type=int)
@@ -28,9 +49,20 @@ def get_sales():
         customer_id = request.args.get('customer_id', type=int)
         start_date = request.args.get('start_date', '')
         end_date = request.args.get('end_date', '')
+        date_from = request.args.get('date_from', '')
+        date_to = request.args.get('date_to', '')
+        status = request.args.get('status', '')
         
         # Build query
         query = Sale.query
+        
+        # Role-based access control
+        # If user is not admin/manager, only show their own sales
+        if not current_user['is_admin'] and current_user['role'] not in ['ADMIN', 'MANAGER']:
+            query = query.filter(Sale.employee_id == current_user['id'])
+        # If admin/manager explicitly requests specific employee's sales, allow it
+        elif employee_id and current_user['is_admin']:
+            query = query.filter(Sale.employee_id == employee_id)
         
         # Add search filter (by receipt number or customer name)
         if search:
@@ -50,6 +82,122 @@ def get_sales():
         # Add customer filter
         if customer_id:
             query = query.filter(Sale.customer_id == customer_id)
+        
+        # Add date range filter (support both date_from/date_to and start_date/end_date)
+        date_from_param = date_from or start_date
+        date_to_param = date_to or end_date
+        
+        if date_from_param:
+            try:
+                start_date_obj = datetime.strptime(date_from_param, '%Y-%m-%d')
+                query = query.filter(Sale.sale_date >= start_date_obj)
+            except ValueError:
+                return jsonify({'error': 'Invalid date_from format. Use YYYY-MM-DD'}), 400
+        
+        if date_to_param:
+            try:
+                end_date_obj = datetime.strptime(date_to_param, '%Y-%m-%d') + timedelta(days=1)
+                query = query.filter(Sale.sale_date < end_date_obj)
+            except ValueError:
+                return jsonify({'error': 'Invalid date_to format. Use YYYY-MM-DD'}), 400
+        
+        # Add status filter
+        if status and status != 'all':
+            if status.lower() == 'completed':
+                query = query.filter(Sale.status == 'completed')
+            elif status.lower() == 'refunded':
+                query = query.filter(Sale.status == 'refunded')
+            elif status.lower() == 'cancelled':
+                query = query.filter(Sale.status == 'cancelled')
+        
+        # Order by sale date (newest first)
+        query = query.order_by(Sale.sale_date.desc())
+        
+        # Paginate results
+        pagination = query.paginate(
+            page=page, 
+            per_page=per_page, 
+            error_out=False
+        )
+        
+        sales = []
+        for sale in pagination.items:
+            # Get sale items with product details
+            items = []
+            if sale.items:
+                for item in sale.items:
+                    items.append({
+                        'id': item.id,
+                        'product_id': item.product_id,
+                        'product_name': item.product.name if item.product else 'Unknown Product',
+                        'quantity': item.quantity,
+                        'unit_price': float(item.unit_price),
+                        'total_price': float(item.total_price)
+                    })
+            
+            sales.append({
+                'id': sale.id,
+                'customer_id': sale.customer_id,
+                'customer_name': sale.customer.name if sale.customer else None,
+                'employee_id': sale.employee_id,
+                'employee': {
+                    'id': sale.employee.id if sale.employee else None,
+                    'name': sale.employee.name if sale.employee else None,
+                    'email': sale.employee.email if sale.employee else None
+                },
+                'total': float(sale.total_amount),
+                'total_amount': float(sale.total_amount),  # Keep for backward compatibility
+                'payment_method': sale.payment_method.value if sale.payment_method else None,
+                'payment_reference': sale.payment_reference,
+                'discount_amount': float(sale.discount_amount),
+                'tax_amount': float(sale.tax_amount),
+                'sale_date': sale.sale_date.isoformat(),
+                'notes': sale.notes,
+                'receipt_number': sale.receipt_number,
+                'status': getattr(sale, 'status', 'completed'),  # Default to completed if no status field
+                'items': items,
+                'items_count': len(items),
+                'created_at': sale.created_at.isoformat(),
+                'card_last_four': getattr(sale, 'card_last_four', None)  # For card payments
+            })
+        
+        return jsonify({
+            'success': True,
+            'data': sales,
+            'sales': sales,  # Keep for backward compatibility
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@sales_bp.route('/sales/employee/<int:employee_id>', methods=['GET'])
+@jwt_required()
+def get_employee_sales(employee_id):
+    """Get sales for a specific employee (admin/manager only)"""
+    try:
+        # Get current user info
+        current_user = get_current_user_info()
+        
+        # Only admins and managers can view other employees' sales
+        if not current_user['is_admin'] and current_user['role'] not in ['ADMIN', 'MANAGER']:
+            return jsonify({'error': 'Access denied. Admin/Manager privileges required.'}), 403
+        
+        # Get query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        start_date = request.args.get('start_date', '')
+        end_date = request.args.get('end_date', '')
+        
+        # Build query for specific employee
+        query = Sale.query.filter(Sale.employee_id == employee_id)
         
         # Add date range filter
         if start_date:
@@ -78,13 +226,30 @@ def get_sales():
         
         sales = []
         for sale in pagination.items:
+            # Get sale items with product details
+            items = []
+            if sale.items:
+                for item in sale.items:
+                    items.append({
+                        'id': item.id,
+                        'product_id': item.product_id,
+                        'product_name': item.product.name if item.product else 'Unknown Product',
+                        'quantity': item.quantity,
+                        'unit_price': float(item.unit_price),
+                        'total_price': float(item.total_price)
+                    })
+            
             sales.append({
                 'id': sale.id,
                 'customer_id': sale.customer_id,
                 'customer_name': sale.customer.name if sale.customer else None,
                 'employee_id': sale.employee_id,
-                'employee_name': sale.employee.name if sale.employee else None,
-                'total_amount': float(sale.total_amount),
+                'employee': {
+                    'id': sale.employee.id if sale.employee else None,
+                    'name': sale.employee.name if sale.employee else None,
+                    'email': sale.employee.email if sale.employee else None
+                },
+                'total': float(sale.total_amount),
                 'payment_method': sale.payment_method.value if sale.payment_method else None,
                 'payment_reference': sale.payment_reference,
                 'discount_amount': float(sale.discount_amount),
@@ -92,12 +257,15 @@ def get_sales():
                 'sale_date': sale.sale_date.isoformat(),
                 'notes': sale.notes,
                 'receipt_number': sale.receipt_number,
-                'items_count': len(sale.items) if sale.items else 0,
+                'status': getattr(sale, 'status', 'completed'),
+                'items': items,
+                'items_count': len(items),
                 'created_at': sale.created_at.isoformat()
             })
         
         return jsonify({
-            'sales': sales,
+            'success': True,
+            'data': sales,
             'pagination': {
                 'page': page,
                 'per_page': per_page,
@@ -187,6 +355,9 @@ def create_sale():
         if not items:
             return jsonify({'error': 'Sale must have at least one item'}), 400
         
+        # Initialize optional entities
+        customer = None
+
         # Validate customer exists (if provided)
         customer_id = data.get('customer_id')
         if customer_id:
