@@ -1,124 +1,155 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import SalesService from '../services/salesService';
 import { 
-  ShoppingCart, 
   Search, 
   Filter, 
-  Calendar,
   Download,
-  Eye,
+  Printer,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Calendar,
+  User,
   CreditCard,
   Banknote,
   Smartphone,
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  Receipt,
-  User,
-  X,
-  ChevronDown
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  ArrowLeft
 } from 'lucide-react';
 
 const SalesHistory = () => {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('all');
-  const [dateRange, setDateRange] = useState('all');
-  const [showFilters, setShowFilters] = useState(false);
   const [selectedSale, setSelectedSale] = useState(null);
-  const [showSaleModal, setShowSaleModal] = useState(false);
-  const [stats, setStats] = useState({
-    totalRevenue: 0,
-    totalSales: 0,
-    averageOrderValue: 0,
-    todayRevenue: 0
+  const [expandedSale, setExpandedSale] = useState(null);
+  const [pagination, setPagination] = useState({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [followLatest, setFollowLatest] = useState(true); // Auto-follow newest sale unless user selects
+  
+  // Filters
+  const [filters, setFilters] = useState({
+    dateFrom: '',
+    dateTo: '',
+    employeeId: user?.id || 'all', // Default to current user's sales
+    paymentType: 'all',
+    status: 'all'
   });
 
-  // Load sales data on component mount
-  useEffect(() => {
-    loadSales();
-  }, []);
-
-  const loadSales = async () => {
+  const loadSales = useCallback(async () => {
     try {
       setLoading(true);
-      const result = await SalesService.getSales();
-      if (result.success) {
-        setSales(result.data);
-        calculateStats(result.data);
+      setError(null);
+      
+      const params = {
+        page: currentPage,
+        per_page: 10
+      };
+
+      // Add filters
+      if (filters.dateFrom) params.date_from = filters.dateFrom;
+      if (filters.dateTo) params.date_to = filters.dateTo;
+      if (filters.employeeId !== 'all') params.employee_id = filters.employeeId;
+      if (filters.paymentType !== 'all') params.payment_method = filters.paymentType;
+      if (filters.status !== 'all') params.status = filters.status;
+
+      const salesResult = await SalesService.getSales(params);
+      
+      if (salesResult.success) {
+        const fetchedSales = salesResult.data || salesResult.sales || [];
+        setSales(fetchedSales);
+        setPagination(salesResult.pagination || {});
+        // Auto-select latest sale when following latest
+        if (followLatest && fetchedSales.length > 0) {
+          setSelectedSale(fetchedSales[0]);
+          setExpandedSale(fetchedSales[0].id);
+        }
       } else {
-        setError(result.error || 'Failed to load sales data');
+        setError(salesResult.error || 'Failed to load sales');
       }
     } catch (error) {
-      setError('An error occurred while loading sales data');
+      console.error('Error loading sales:', error);
+      setError('Failed to load sales');
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPage, filters]);
 
-  const calculateStats = (salesData) => {
-    const totalRevenue = salesData.reduce((sum, sale) => sum + sale.total, 0);
-    const totalSales = salesData.length;
-    const averageOrderValue = totalSales > 0 ? totalRevenue / totalSales : 0;
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayRevenue = salesData
-      .filter(sale => new Date(sale.created_at) >= today)
-      .reduce((sum, sale) => sum + sale.total, 0);
-
-    setStats({
-      totalRevenue,
-      totalSales,
-      averageOrderValue,
-      todayRevenue
-    });
-  };
-
-  // Filter sales based on search, payment method, and date range
-  const filteredSales = sales.filter(sale => {
-    const matchesSearch = sale.customer_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         sale.id.toString().includes(searchTerm) ||
-                         sale.payment_method.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    const matchesPaymentMethod = selectedPaymentMethod === 'all' || sale.payment_method === selectedPaymentMethod;
-    
-    let matchesDateRange = true;
-    if (dateRange !== 'all') {
-      const saleDate = new Date(sale.created_at);
-      const today = new Date();
-      
-      switch (dateRange) {
-        case 'today':
-          matchesDateRange = saleDate.toDateString() === today.toDateString();
-          break;
-        case 'week':
-          const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-          matchesDateRange = saleDate >= weekAgo;
-          break;
-        case 'month':
-          const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-          matchesDateRange = saleDate >= monthAgo;
-          break;
-      }
+  // Update filters when user changes
+  useEffect(() => {
+    if (user?.id && filters.employeeId === 'all') {
+      setFilters(prev => ({ ...prev, employeeId: user.id }));
     }
-    
-    return matchesSearch && matchesPaymentMethod && matchesDateRange;
-  });
+  }, [user?.id, filters.employeeId]);
 
-  const handleViewSale = (sale) => {
-    setSelectedSale(sale);
-    setShowSaleModal(true);
+  // Load sales when component mounts or when page/filters change
+  useEffect(() => {
+    loadSales();
+  }, [loadSales]);
+
+  // Keep details synced to newest sale whenever sales list updates and followLatest is on
+  useEffect(() => {
+    if (followLatest && sales && sales.length > 0) {
+      setSelectedSale(sales[0]);
+      setExpandedSale(sales[0].id);
+    }
+  }, [sales, followLatest]);
+
+  const handleFilterChange = (key, value) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+    setCurrentPage(1); // Reset to first page when filtering
   };
 
-  const getPaymentMethodIcon = (method) => {
-    switch (method.toLowerCase()) {
-      case 'cash':
-        return <Banknote className="h-4 w-4" />;
+  const handlePageChange = (newPage) => {
+    if (newPage >= 1 && newPage <= (pagination.pages || 1)) {
+      setCurrentPage(newPage);
+    }
+  };
+
+  const toggleExpandedSale = (saleId) => {
+    setFollowLatest(false); // User took control
+    setExpandedSale(expandedSale === saleId ? null : saleId);
+    setSelectedSale(expandedSale === saleId ? null : sales.find(s => s.id === saleId));
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status?.toLowerCase()) {
+      case 'completed':
+        return <CheckCircle className="h-4 w-4 text-green-500" />;
+      case 'refunded':
+        return <RefreshCw className="h-4 w-4 text-orange-500" />;
+      case 'cancelled':
+        return <XCircle className="h-4 w-4 text-red-500" />;
+      default:
+        return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status?.toLowerCase()) {
+      case 'completed':
+        return 'bg-green-500/20 text-green-400';
+      case 'refunded':
+        return 'bg-orange-500/20 text-orange-400';
+      case 'cancelled':
+        return 'bg-red-500/20 text-red-400';
+      default:
+        return 'bg-yellow-500/20 text-yellow-400';
+    }
+  };
+
+  const getPaymentIcon = (paymentMethod) => {
+    switch (paymentMethod?.toLowerCase()) {
       case 'card':
         return <CreditCard className="h-4 w-4" />;
+      case 'cash':
+        return <Banknote className="h-4 w-4" />;
       case 'mpesa':
         return <Smartphone className="h-4 w-4" />;
       default:
@@ -126,39 +157,19 @@ const SalesHistory = () => {
     }
   };
 
-  const getPaymentMethodColor = (method) => {
-    switch (method.toLowerCase()) {
-      case 'cash':
-        return 'bg-green-500/20 text-green-400 border-green-500/30';
-      case 'card':
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-      case 'mpesa':
-        return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
-      default:
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
+  const handleExport = () => {
+    // TODO: Implement export functionality
+    console.log('Export sales data');
   };
 
-  const exportToCSV = () => {
-    const csvContent = [
-      ['Sale ID', 'Customer', 'Payment Method', 'Total', 'Date', 'Items'],
-      ...filteredSales.map(sale => [
-        sale.id,
-        sale.customer_name || 'Walk-in Customer',
-        sale.payment_method,
-        sale.total,
-        new Date(sale.created_at).toLocaleDateString(),
-        sale.items?.length || 0
-      ])
-    ].map(row => row.join(',')).join('\n');
+  const handleReprint = (sale) => {
+    // TODO: Implement reprint functionality
+    console.log('Reprint receipt for sale:', sale.id);
+  };
 
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `sales-history-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    window.URL.revokeObjectURL(url);
+  const handleRefund = (sale) => {
+    // TODO: Implement refund functionality
+    console.log('Process refund for sale:', sale.id);
   };
 
   if (loading && sales.length === 0) {
@@ -175,314 +186,370 @@ const SalesHistory = () => {
   return (
     <div className="min-h-screen bg-background-dark">
       {/* Header */}
-      <div className="px-6 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-4xl font-bold text-white tracking-tighter font-display">
-              Sales History
-            </h1>
-            <p className="text-white/60 mt-2">
-              Track and analyze your sales performance.
-            </p>
-          </div>
-          <button
-            onClick={exportToCSV}
-            className="bg-primary text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary/90 transition-colors shadow-lg shadow-primary/20 flex items-center space-x-2"
-          >
-            <Download className="h-5 w-5" />
-            <span>Export CSV</span>
-          </button>
-        </div>
-
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <div className="glassmorphism rounded-lg p-6 border border-white/10">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white/60 text-sm font-medium">Total Revenue</p>
-                <p className="text-2xl font-bold text-white mt-1">KSH {stats.totalRevenue.toLocaleString()}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-green-500/20">
-                <DollarSign className="h-6 w-6 text-green-400" />
-              </div>
-            </div>
-          </div>
-
-          <div className="glassmorphism rounded-lg p-6 border border-white/10">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white/60 text-sm font-medium">Total Sales</p>
-                <p className="text-2xl font-bold text-white mt-1">{stats.totalSales.toLocaleString()}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-blue-500/20">
-                <ShoppingCart className="h-6 w-6 text-blue-400" />
-              </div>
-            </div>
-          </div>
-
-          <div className="glassmorphism rounded-lg p-6 border border-white/10">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white/60 text-sm font-medium">Average Order</p>
-                <p className="text-2xl font-bold text-white mt-1">KSH {stats.averageOrderValue.toFixed(2)}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-purple-500/20">
-                <TrendingUp className="h-6 w-6 text-purple-400" />
-              </div>
-            </div>
-          </div>
-
-          <div className="glassmorphism rounded-lg p-6 border border-white/10">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white/60 text-sm font-medium">Today's Revenue</p>
-                <p className="text-2xl font-bold text-white mt-1">KSH {stats.todayRevenue.toLocaleString()}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-orange-500/20">
-                <TrendingDown className="h-6 w-6 text-orange-400" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Search and Filters */}
-        <div className="mb-8 space-y-4">
+      <header className="bg-background-dark border-b border-white/10 px-6 py-4">
+        <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
-            {/* Search Bar */}
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-white/40" />
-              <input
-                type="text"
-                placeholder="Search sales..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="form-input pl-10 pr-4 py-3 w-full rounded-lg focus:ring-primary focus:border-primary"
-              />
+          <button
+              onClick={() => navigate('/pos')}
+              className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+          >
+              <ArrowLeft className="h-5 w-5" />
+          </button>
+            <div className="flex items-center space-x-2">
+              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-lg">*</span>
+              </div>
+              <h1 className="text-2xl font-bold text-white font-display">The Vault</h1>
             </div>
-
-            {/* Filter Toggle */}
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`p-3 rounded-lg transition-colors ${
-                showFilters 
-                  ? 'bg-primary text-white' 
-                  : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
-              }`}
-            >
-              <Filter className="h-5 w-5" />
-            </button>
           </div>
 
-          {/* Filters */}
-          {showFilters && (
-            <div className="flex items-center space-x-4 overflow-x-auto">
-              {/* Payment Method Filter */}
-              <div className="relative">
+          <div className="flex items-center space-x-4">
+            <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center">
+              <span className="text-white font-semibold text-sm">
+                {user?.name?.charAt(0)?.toUpperCase() || 'U'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <div className="p-6">
+        {/* Sales History Section */}
+        <div className="w-full">
+          {/* Title Section */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-3xl font-bold text-white mb-2">Sales History</h2>
+                <p className="text-white/60">View and manage past transactions.</p>
+              </div>
+              <button
+                onClick={handleExport}
+                className="flex items-center space-x-2 bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+              >
+                <Download className="h-4 w-4" />
+                <span>Export</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Filters Section */}
+          <div className="mb-6 w-full">
+            <div className="flex items-center space-x-4 w-full">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-white/60 mb-2">Date Range</label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={filters.dateFrom}
+                    onChange={(e) => handleFilterChange('dateFrom', e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-white placeholder-white/40 focus:ring-2 focus:ring-primary focus:border-transparent"
+                    placeholder="mm/dd/yyyy"
+                  />
+                  <Calendar className="absolute right-3 top-2.5 h-4 w-4 text-white/40" />
+                </div>
+              </div>
+              
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-white/60 mb-2">Employee</label>
                 <select
-                  value={selectedPaymentMethod}
-                  onChange={(e) => setSelectedPaymentMethod(e.target.value)}
-                  className="form-input form-select px-4 py-3 rounded-lg focus:ring-primary focus:border-primary appearance-none pr-8"
+                  value={filters.employeeId}
+                  onChange={(e) => handleFilterChange('employeeId', e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-white focus:ring-2 focus:ring-primary focus:border-transparent"
                 >
-                  <option value="all">All Payment Methods</option>
+                  <option value="all">All Employees</option>
+                  <option value={user?.id}>My Sales ({user?.name || 'Current User'})</option>
+                </select>
+        </div>
+
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-white/60 mb-2">Payment Type</label>
+                <select
+                  value={filters.paymentType}
+                  onChange={(e) => handleFilterChange('paymentType', e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-white focus:ring-2 focus:ring-primary focus:border-transparent"
+                >
+                  <option value="all">All Types</option>
                   <option value="cash">Cash</option>
                   <option value="card">Card</option>
                   <option value="mpesa">M-Pesa</option>
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-white/40 pointer-events-none" />
               </div>
 
-              {/* Date Range Filter */}
-              <div className="relative">
-                <select
-                  value={dateRange}
-                  onChange={(e) => setDateRange(e.target.value)}
-                  className="form-input form-select px-4 py-3 rounded-lg focus:ring-primary focus:border-primary appearance-none pr-8"
+              <div className="flex items-end">
+                <button
+                  onClick={loadSales}
+                  className="flex items-center space-x-2 bg-primary text-white px-6 py-2 rounded-lg hover:bg-primary/90 transition-colors font-medium"
                 >
-                  <option value="all">All Time</option>
-                  <option value="today">Today</option>
-                  <option value="week">This Week</option>
-                  <option value="month">This Month</option>
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-white/40 pointer-events-none" />
+                  <Filter className="h-4 w-4" />
+                  <span>Filter</span>
+                </button>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-lg mb-6">
-            <div className="flex items-center justify-between">
-              <span className="text-sm">{error}</span>
-              <button
-                onClick={() => setError(null)}
-                className="ml-2 text-red-400 hover:text-red-300"
-              >
-                <X className="h-4 w-4" />
-              </button>
             </div>
           </div>
-        )}
 
-        {/* Sales Table */}
-        <div className="glassmorphism rounded-lg border border-white/10 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          {/* Table and Sidebar Container */}
+          <div className="flex gap-6">
+            {/* Sales Table */}
+            <div className="flex-1 bg-white/5 rounded-lg border border-white/10 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full">
               <thead className="bg-white/5">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Sale ID
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-white/80 uppercase tracking-wider">
+                      TRANSACTION ID
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Customer
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-white/80 uppercase tracking-wider">
+                      DATE & TIME
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Payment Method
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-white/80 uppercase tracking-wider">
+                      EMPLOYEE
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Total
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-white/80 uppercase tracking-wider">
+                      TOTAL
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Date
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Actions
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-white/80 uppercase tracking-wider">
+                      STATUS
                   </th>
                 </tr>
               </thead>
               <tbody className="bg-transparent divide-y divide-white/10">
-                {filteredSales.map((sale) => (
-                  <tr key={sale.id} className="hover:bg-white/5">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <Receipt className="h-5 w-5 text-white/40 mr-3" />
-                        <span className="text-sm font-medium text-white">#{sale.id}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <User className="h-5 w-5 text-white/40 mr-3" />
-                        <span className="text-sm text-white">{sale.customer_name || 'Walk-in Customer'}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className={`inline-flex items-center space-x-1 px-2 py-1 rounded-full text-xs font-medium border ${getPaymentMethodColor(sale.payment_method)}`}>
-                        {getPaymentMethodIcon(sale.payment_method)}
-                        <span className="capitalize">{sale.payment_method}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="text-sm font-semibold text-white">KSH {sale.total.toFixed(2)}</span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center text-sm text-white/60">
-                        <Calendar className="h-4 w-4 mr-2" />
-                        {new Date(sale.created_at).toLocaleDateString()}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <button
-                        onClick={() => handleViewSale(sale)}
-                        className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                  {sales.map((sale) => (
+                    <React.Fragment key={sale.id}>
+                      <tr 
+                        className="hover:bg-white/5 cursor-pointer"
+                        onClick={() => toggleExpandedSale(sale.id)}
                       >
-                        <Eye className="h-4 w-4" />
-                      </button>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-primary font-medium">#{sale.id}</span>
+                            {expandedSale === sale.id ? (
+                              <ChevronUp className="h-4 w-4 text-white/60" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 text-white/60" />
+                            )}
+                      </div>
                     </td>
-                  </tr>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-white">
+                          {new Date(sale.created_at).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true
+                          })}
+                    </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-white">
+                          {sale.employee?.name || sale.employee_name || 'Unknown'}
+                    </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-white">
+                          KSH {(sale.total || sale.total_amount || 0).toFixed(2)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(sale.status)}`}>
+                            {getStatusIcon(sale.status)}
+                            <span className="capitalize">{sale.status || 'Completed'}</span>
+                          </span>
+                        </td>
+                      </tr>
+                      
+                      {/* Expanded Row */}
+                      {expandedSale === sale.id && (
+                        <tr className="bg-white/5">
+                          <td colSpan="5" className="px-6 py-4">
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <h4 className="text-sm font-medium text-white mb-2">Items</h4>
+                                  <div className="space-y-1">
+                                    {sale.items?.map((item, index) => (
+                                      <div key={index} className="text-sm text-white/80">
+                                        {item.quantity} x {item.product_name}
+                                      </div>
+                                    )) || <div className="text-sm text-white/60">No items found</div>}
+                                  </div>
+                                </div>
+                                <div>
+                                  <h4 className="text-sm font-medium text-white mb-2">Payment</h4>
+                                  <div className="flex items-center space-x-2 text-sm text-white/80">
+                                    {getPaymentIcon(sale.payment_method)}
+                                    <span className="capitalize">{sale.payment_method}</span>
+                                    {sale.payment_method === 'card' && sale.card_last_four && (
+                                      <span>(**** {sale.card_last_four})</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              
+                              {/* Action Buttons */}
+                              <div className="flex items-center space-x-3 pt-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleReprint(sale);
+                                  }}
+                                  className="flex items-center space-x-2 text-white/60 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg transition-colors"
+                                >
+                                  <Printer className="h-4 w-4" />
+                                  <span>Reprint</span>
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRefund(sale);
+                                  }}
+                                  className="flex items-center space-x-2 text-white/60 hover:text-white hover:bg-white/10 px-3 py-2 rounded-lg transition-colors"
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                  <span>Refund</span>
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                 ))}
               </tbody>
-            </table>
-          </div>
-        </div>
-
-        {filteredSales.length === 0 && (
-          <div className="text-center py-12">
-            <ShoppingCart className="h-16 w-16 text-white/30 mx-auto mb-4" />
-            <p className="text-white/60">No sales found</p>
-            <p className="text-white/40 text-sm">Try adjusting your search or filters</p>
-          </div>
-        )}
-      </div>
-
-      {/* Sale Details Modal */}
-      {showSaleModal && selectedSale && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-background-dark rounded-lg border border-white/10 w-full max-w-2xl">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-white">Sale Details #{selectedSale.id}</h3>
-                <button
-                  onClick={() => setShowSaleModal(false)}
-                  className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="space-y-6">
-                {/* Sale Info */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-white/5 rounded-lg p-4">
-                    <h4 className="text-sm font-medium text-white/60 mb-2">Customer</h4>
-                    <p className="text-white">{selectedSale.customer_name || 'Walk-in Customer'}</p>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-4">
-                    <h4 className="text-sm font-medium text-white/60 mb-2">Payment Method</h4>
-                    <div className={`inline-flex items-center space-x-1 px-2 py-1 rounded-full text-xs font-medium border ${getPaymentMethodColor(selectedSale.payment_method)}`}>
-                      {getPaymentMethodIcon(selectedSale.payment_method)}
-                      <span className="capitalize">{selectedSale.payment_method}</span>
-                    </div>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-4">
-                    <h4 className="text-sm font-medium text-white/60 mb-2">Date</h4>
-                    <p className="text-white">{new Date(selectedSale.created_at).toLocaleString()}</p>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-4">
-                    <h4 className="text-sm font-medium text-white/60 mb-2">Total</h4>
-                    <p className="text-white font-semibold">KSH {selectedSale.total.toFixed(2)}</p>
-                  </div>
-                </div>
-
-                {/* Items */}
-                <div>
-                  <h4 className="text-sm font-medium text-white/60 mb-3">Items Sold</h4>
-                  <div className="space-y-2">
-                    {selectedSale.items?.map((item, index) => (
-                      <div key={index} className="bg-white/5 rounded-lg p-3 flex justify-between items-center">
-                        <div>
-                          <p className="text-white font-medium">{item.product_name}</p>
-                          <p className="text-white/60 text-sm">Qty: {item.quantity}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-white font-semibold">KSH {(item.price * item.quantity).toFixed(2)}</p>
-                          <p className="text-white/60 text-sm">KSH {item.price.toFixed(2)} each</p>
-                        </div>
-                      </div>
-                    )) || (
-                      <p className="text-white/60 text-center py-4">No item details available</p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Totals */}
-                <div className="bg-white/5 rounded-lg p-4">
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-white/60">Subtotal:</span>
-                      <span className="text-white">KSH {selectedSale.subtotal?.toFixed(2) || '0.00'}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-white/60">Tax:</span>
-                      <span className="text-white">KSH {selectedSale.tax?.toFixed(2) || '0.00'}</span>
-                    </div>
-                    <div className="flex justify-between text-lg font-bold border-t border-white/10 pt-2">
-                      <span className="text-white">Total:</span>
-                      <span className="text-white">KSH {selectedSale.total.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
+                </table>
               </div>
             </div>
+
+            {/* Transaction Details Sidebar - always visible, follows latest unless user selects */}
+            <div className="w-96 bg-background-dark border-l border-white/10 p-6">
+              <h3 className="text-lg font-semibold text-white mb-6">Transaction Details</h3>
+              {(() => {
+                const detailSale = selectedSale || (followLatest ? (sales && sales[0]) : null);
+                if (!detailSale) {
+                  return (
+                    <div className="text-white/60 text-sm">{sales && sales.length === 0 ? 'No sales found.' : 'No sale selected.'}</div>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Transaction ID</label>
+                      <p className="text-white">#{detailSale.id}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Date</label>
+                      <p className="text-white">{new Date(detailSale.created_at || detailSale.sale_date).toLocaleDateString('en-CA')}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Time</label>
+                      <p className="text-white">{new Date(detailSale.created_at || detailSale.sale_date).toLocaleTimeString('en-US', { 
+                        hour: 'numeric', 
+                        minute: '2-digit', 
+                        hour12: true 
+                      })}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Employee</label>
+                      <p className="text-white">{detailSale.employee?.name || detailSale.employee_name || 'Unknown'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Payment Type</label>
+                      <p className="text-white capitalize">{detailSale.payment_method}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Status</label>
+                      <p className="text-green-400 capitalize">{detailSale.status || 'Completed'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-white/60 mb-1">Items</label>
+                      <div className="space-y-1">
+                        {detailSale.items?.map((item, index) => (
+                          <div key={index} className="flex justify-between text-sm">
+                            <span className="text-white">{item.quantity} x {item.product_name}</span>
+                            <span className="text-white">KSH {(((item.unit_price || item.price || 0) * item.quantity)).toFixed(2)}</span>
+                          </div>
+                        )) || <div className="text-sm text-white/60">No items found</div>}
+                      </div>
+                    </div>
+                    
+                    <div className="border-t border-white/10 pt-4">
+                      <div className="flex justify-between text-lg font-bold">
+                        <span className="text-white">Total</span>
+                        <span className="text-white font-bold">KSH {(detailSale.total || detailSale.total_amount || 0).toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Pagination */}
+          {pagination.pages > 1 && (
+            <div className="flex items-center justify-between mt-6">
+              <div className="text-sm text-white/60">
+                Showing {((currentPage - 1) * 10) + 1} to {Math.min(currentPage * 10, pagination.total)} of {pagination.total} sales
+              </div>
+              
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="px-3 py-2 text-sm font-medium text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                
+                <div className="flex items-center space-x-1">
+                  {Array.from({ length: Math.min(5, pagination.pages) }, (_, i) => {
+                    let pageNum;
+                    if (pagination.pages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= pagination.pages - 2) {
+                      pageNum = pagination.pages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+                    
+                    return (
+                      <button
+                        key={`page-${pageNum}`}
+                        onClick={() => handlePageChange(pageNum)}
+                        className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                          currentPage === pageNum
+                            ? 'bg-primary text-white'
+                            : 'text-white/60 hover:text-white hover:bg-white/10'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === pagination.pages}
+                  className="px-3 py-2 text-sm font-medium text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="fixed bottom-4 right-4 bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-lg max-w-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-sm">{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="ml-2 text-red-400 hover:text-red-300"
+            >
+              ×
+            </button>
           </div>
         </div>
       )}

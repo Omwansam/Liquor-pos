@@ -4,6 +4,8 @@ import { AppProvider } from './contexts/AppContext';
 import Login from './components/Login';
 import AdminDashboard from './components/AdminDashboard';
 import EmployeePOS from './components/EmployeePOS';
+import SaleReceipt from './components/SaleReceipt';
+import SalesHistory from './components/SalesHistory';
 import LoadingSpinner from './components/LoadingSpinner';
 
 const ProtectedRoute = ({ children, requiredRoles, requiredPermission }) => {
@@ -65,6 +67,22 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute requiredPermission="can_process_sales">
             <EmployeePOS />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/pos/sales" 
+        element={
+          <ProtectedRoute requiredPermission="can_process_sales">
+            <SalesHistory />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/pos/receipt/:saleId" 
+        element={
+          <ProtectedRoute requiredPermission="can_process_sales">
+            <SaleReceipt />
           </ProtectedRoute>
         } 
       />
