@@ -37,7 +37,7 @@ const SalesHistory = () => {
   const [filters, setFilters] = useState({
     dateFrom: '',
     dateTo: '',
-    employeeId: user?.id || 'all', // Default to current user's sales
+    employeeId: 'all', // Admin/Manager should see all by default
     paymentType: 'all',
     status: 'all'
   });
@@ -83,10 +83,13 @@ const SalesHistory = () => {
 
   // Update filters when user changes
   useEffect(() => {
-    if (user?.id && filters.employeeId === 'all') {
+    // Only auto-scope to own sales for non-admin/non-manager users
+    const role = user?.role;
+    const isPrivileged = role === 'ADMIN' || role === 'MANAGER' || user?.is_admin;
+    if (!isPrivileged && user?.id && filters.employeeId === 'all') {
       setFilters(prev => ({ ...prev, employeeId: user.id }));
     }
-  }, [user?.id, filters.employeeId]);
+  }, [user?.id, user?.role, user?.is_admin, filters.employeeId]);
 
   // Load sales when component mounts or when page/filters change
   useEffect(() => {

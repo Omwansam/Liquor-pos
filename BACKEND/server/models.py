@@ -37,6 +37,18 @@ class ProductStatus(Enum):
     LOW_STOCK = 'Low Stock'
     OUT_OF_STOCK = 'Out of Stock'
 
+class MpesaTransactionStatus(Enum):
+    PENDING = 'pending'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    EXPIRED = 'expired'
+
+class MpesaTransactionType(Enum):
+    C2B = 'c2b'  # Customer to Business
+    B2C = 'b2c'  # Business to Customer
+    STK_PUSH = 'stk_push'  # STK Push (Lipa na M-Pesa Online)
+
 # User Model
 class User(db.Model):
     __tablename__ = 'users'
@@ -319,4 +331,130 @@ class AuditLog(db.Model):
     
     def __repr__(self):
         return f'<AuditLog {self.id}>'
+
+# M-Pesa Transaction Model
+class MpesaTransaction(db.Model):
+    __tablename__ = 'mpesa_transactions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # Transaction identifiers
+    checkout_request_id = db.Column(db.String(100), nullable=True, index=True)  # For STK Push
+    merchant_request_id = db.Column(db.String(100), nullable=True, index=True)  # For STK Push
+    mpesa_receipt_number = db.Column(db.String(100), nullable=True, unique=True, index=True)  # M-Pesa receipt
+    transaction_id = db.Column(db.String(100), nullable=True, index=True)  # Our internal transaction ID
+    
+    # Transaction details
+    transaction_type = db.Column(db.Enum(MpesaTransactionType), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    phone_number = db.Column(db.String(15), nullable=False, index=True)  # Customer phone
+    account_reference = db.Column(db.String(50), nullable=True)  # Order/Sale reference
+    transaction_desc = db.Column(db.String(100), nullable=True)
+    
+    # Status and timestamps
+    status = db.Column(db.Enum(MpesaTransactionStatus), default=MpesaTransactionStatus.PENDING, nullable=False)
+    initiated_at = db.Column(db.DateTime(timezone=True), server_default=db.func.current_timestamp(), nullable=False)
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    
+    # M-Pesa response data
+    result_code = db.Column(db.String(10), nullable=True)  # 0 for success
+    result_desc = db.Column(db.Text, nullable=True)
+    
+    # Additional M-Pesa data (stored as JSON for flexibility)
+    mpesa_data = db.Column(db.JSON, nullable=True)  # Raw M-Pesa callback data
+    
+    # Relationships
+    sale_id = db.Column(db.Integer, db.ForeignKey('sales.id', ondelete='SET NULL'), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='SET NULL'), nullable=True)  # Employee who initiated
+    
+    # Indexes for better query performance
+    __table_args__ = (
+        db.Index('idx_mpesa_phone_status', 'phone_number', 'status'),
+        db.Index('idx_mpesa_account_ref', 'account_reference'),
+        db.Index('idx_mpesa_initiated_at', 'initiated_at'),
+    )
+    
+    def __repr__(self):
+        return f'<MpesaTransaction {self.id}>'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'checkout_request_id': self.checkout_request_id,
+            'merchant_request_id': self.merchant_request_id,
+            'mpesa_receipt_number': self.mpesa_receipt_number,
+            'transaction_id': self.transaction_id,
+            'transaction_type': self.transaction_type.value if self.transaction_type else None,
+            'amount': float(self.amount) if self.amount else 0,
+            'phone_number': self.phone_number,
+            'account_reference': self.account_reference,
+            'transaction_desc': self.transaction_desc,
+            'status': self.status.value if self.status else None,
+            'initiated_at': self.initiated_at.isoformat() if self.initiated_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'result_code': self.result_code,
+            'result_desc': self.result_desc,
+            'sale_id': self.sale_id,
+            'user_id': self.user_id
+        }
+
+# M-Pesa C2B Transaction Model (for direct payments to paybill/till)
+class MpesaC2BTransaction(db.Model):
+    __tablename__ = 'mpesa_c2b_transactions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # M-Pesa provided data
+    transaction_type = db.Column(db.String(50), nullable=False)  # "Pay Bill" or "Buy Goods"
+    trans_id = db.Column(db.String(100), nullable=False, unique=True, index=True)  # M-Pesa transaction ID
+    trans_time = db.Column(db.String(20), nullable=False)  # YYYYMMDDHHmmss format
+    trans_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    business_short_code = db.Column(db.String(10), nullable=False)
+    bill_ref_number = db.Column(db.String(50), nullable=True)  # Account reference from customer
+    invoice_number = db.Column(db.String(50), nullable=True)
+    org_account_balance = db.Column(db.Numeric(12, 2), nullable=True)
+    third_party_trans_id = db.Column(db.String(100), nullable=True)
+    msisdn = db.Column(db.String(15), nullable=False, index=True)  # Customer phone number
+    first_name = db.Column(db.String(100), nullable=True)
+    middle_name = db.Column(db.String(100), nullable=True)
+    last_name = db.Column(db.String(100), nullable=True)
+    
+    # Internal processing
+    processed = db.Column(db.Boolean, default=False, nullable=False)
+    processed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    sale_id = db.Column(db.Integer, db.ForeignKey('sales.id', ondelete='SET NULL'), nullable=True)
+    
+    # Raw data and metadata
+    raw_data = db.Column(db.JSON, nullable=True)  # Store complete callback data
+    created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.current_timestamp(), nullable=False)
+    
+    # Indexes
+    __table_args__ = (
+        db.Index('idx_c2b_msisdn_time', 'msisdn', 'trans_time'),
+        db.Index('idx_c2b_bill_ref', 'bill_ref_number'),
+        db.Index('idx_c2b_processed', 'processed'),
+    )
+    
+    def __repr__(self):
+        return f'<MpesaC2BTransaction {self.trans_id}>'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'transaction_type': self.transaction_type,
+            'trans_id': self.trans_id,
+            'trans_time': self.trans_time,
+            'trans_amount': float(self.trans_amount) if self.trans_amount else 0,
+            'business_short_code': self.business_short_code,
+            'bill_ref_number': self.bill_ref_number,
+            'invoice_number': self.invoice_number,
+            'msisdn': self.msisdn,
+            'first_name': self.first_name,
+            'middle_name': self.middle_name,
+            'last_name': self.last_name,
+            'processed': self.processed,
+            'processed_at': self.processed_at.isoformat() if self.processed_at else None,
+            'sale_id': self.sale_id,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
 

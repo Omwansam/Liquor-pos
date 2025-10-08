@@ -1,9 +1,13 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from extensions import db
-from models import Sale, SaleItem, Product, Customer, User, PaymentMethod
+from models import Sale, SaleItem, Product, Customer, User, PaymentMethod, MpesaTransaction, MpesaTransactionStatus, MpesaTransactionType
+from utils.daraja_client import initiate_stk_push
 from decimal import Decimal
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 sales_bp = Blueprint('sales', __name__)
 
@@ -25,10 +29,12 @@ def get_current_user_info():
         user_id = current_identity.get('id')
     else:
         user_id = current_identity
-    
+    # Normalize role to uppercase so downstream checks work regardless of token casing
+    role_claim = claims.get('role', 'EMPLOYEE')
+    normalized_role = role_claim.upper() if isinstance(role_claim, str) else 'EMPLOYEE'
     return {
         'id': user_id,
-        'role': claims.get('role', 'EMPLOYEE'),
+        'role': normalized_role,
         'is_admin': claims.get('is_admin', False)
     }
 
@@ -542,6 +548,243 @@ def delete_sale(sale_id):
         
     except Exception as e:
         db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@sales_bp.route('/sales/mpesa', methods=['POST'])
+@jwt_required()
+def create_sale_with_mpesa():
+    """Create a new sale with M-Pesa payment integration"""
+    try:
+        # Check if user has permission (admin/manager/employee)
+        current_user_id = get_current_user()
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        # Validate required fields for M-Pesa payment
+        required_fields = ['employee_id', 'total_amount', 'items', 'mpesa_phone_number']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'{field} is required'}), 400
+        
+        # Initialize optional entities
+        customer = None
+        
+        # Validate customer exists (if provided)
+        customer_id = data.get('customer_id')
+        if customer_id:
+            customer = Customer.query.get(customer_id)
+            if not customer:
+                return jsonify({'error': 'Invalid customer_id'}), 400
+        
+        # Validate employee exists
+        employee = User.query.get(data['employee_id'])
+        if not employee:
+            return jsonify({'error': 'Invalid employee_id'}), 400
+        
+        # Validate items
+        items = data.get('items', [])
+        if not items:
+            return jsonify({'error': 'Sale must have at least one item'}), 400
+        
+        # Generate receipt number
+        receipt_number = data.get('receipt_number')
+        if not receipt_number:
+            receipt_number = f"RCP{datetime.now().strftime('%Y%m%d%H%M%S')}{current_user_id}"
+        
+        # Check if receipt number already exists
+        existing_sale = Sale.query.filter_by(receipt_number=receipt_number).first()
+        if existing_sale:
+            receipt_number += f"-{datetime.now().strftime('%f')}"
+        
+        # Create new sale with pending status
+        sale = Sale(
+            customer_id=customer_id,
+            employee_id=data['employee_id'],
+            total_amount=Decimal(str(data['total_amount'])),
+            payment_method=PaymentMethod.MPESA,
+            payment_reference=None,  # Will be updated after M-Pesa payment
+            discount_amount=Decimal(str(data.get('discount_amount', 0))),
+            tax_amount=Decimal(str(data.get('tax_amount', 0))),
+            notes=data.get('notes'),
+            receipt_number=receipt_number
+        )
+        
+        db.session.add(sale)
+        db.session.flush()  # Get the sale ID
+        
+        # Create sale items and validate stock
+        total_calculated = Decimal('0')
+        sale_items = []
+        
+        for item_data in items:
+            # Validate product exists
+            product = Product.query.get(item_data['product_id'])
+            if not product:
+                return jsonify({'error': f'Invalid product_id: {item_data["product_id"]}'}), 400
+            
+            # Check stock availability
+            if product.stock < item_data['quantity']:
+                return jsonify({
+                    'error': f'Insufficient stock for product {product.name}. Available: {product.stock}, Requested: {item_data["quantity"]}'
+                }), 400
+            
+            # Calculate item total
+            unit_price = Decimal(str(item_data['unit_price']))
+            quantity = item_data['quantity']
+            item_discount = Decimal(str(item_data.get('discount_amount', 0)))
+            item_total = (unit_price * quantity) - item_discount
+            
+            # Create sale item (but don't commit yet)
+            sale_item = SaleItem(
+                sale_id=sale.id,
+                product_id=item_data['product_id'],
+                quantity=quantity,
+                unit_price=unit_price,
+                total_price=item_total,
+                discount_amount=item_discount
+            )
+            
+            sale_items.append({
+                'sale_item': sale_item,
+                'product': product,
+                'quantity': quantity
+            })
+            
+            total_calculated += item_total
+        
+        # Verify total amount matches calculated total
+        if abs(total_calculated - sale.total_amount) > Decimal('0.01'):
+            db.session.rollback()
+            return jsonify({
+                'error': f'Total amount mismatch. Calculated: {total_calculated}, Provided: {sale.total_amount}'
+            }), 400
+        
+        # Create M-Pesa transaction record
+        mpesa_transaction = MpesaTransaction(
+            transaction_type=MpesaTransactionType.STK_PUSH,
+            amount=sale.total_amount,
+            phone_number=data['mpesa_phone_number'],
+            account_reference=receipt_number,
+            transaction_desc=f"Payment for sale {receipt_number}",
+            status=MpesaTransactionStatus.PENDING,
+            sale_id=sale.id,
+            user_id=current_user_id
+        )
+        
+        db.session.add(mpesa_transaction)
+        db.session.flush()  # Get the M-Pesa transaction ID
+        
+        # Generate unique transaction ID
+        transaction_id = f"TXN{mpesa_transaction.id}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        mpesa_transaction.transaction_id = transaction_id
+        
+        # Initiate STK Push
+        response_data, status_code = initiate_stk_push(
+            phone_number=data['mpesa_phone_number'],
+            amount=float(sale.total_amount),
+            order_id=mpesa_transaction.id,
+            description=f"Payment for sale {receipt_number}"
+        )
+        
+        if status_code == 200:
+            # Update M-Pesa transaction with response
+            mpesa_transaction.checkout_request_id = response_data.get('CheckoutRequestID')
+            mpesa_transaction.merchant_request_id = response_data.get('MerchantRequestID')
+            mpesa_transaction.mpesa_data = response_data
+            
+            # Add sale items to session (but don't update stock yet)
+            for item_info in sale_items:
+                db.session.add(item_info['sale_item'])
+            
+            # Update customer's total purchases if customer exists
+            if customer:
+                customer.total_purchases += sale.total_amount
+                customer.last_purchase_date = datetime.utcnow()
+            
+            db.session.commit()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Sale created and M-Pesa payment initiated',
+                'sale': {
+                    'id': sale.id,
+                    'receipt_number': sale.receipt_number,
+                    'total_amount': float(sale.total_amount),
+                    'customer_name': customer.name if customer else None,
+                    'employee_name': employee.name,
+                    'payment_method': sale.payment_method.value,
+                    'sale_date': sale.sale_date.isoformat(),
+                    'items_count': len(items)
+                },
+                'mpesa': {
+                    'transaction_id': transaction_id,
+                    'checkout_request_id': response_data.get('CheckoutRequestID'),
+                    'merchant_request_id': response_data.get('MerchantRequestID'),
+                    'customer_message': response_data.get('CustomerMessage')
+                }
+            }), 201
+        else:
+            # M-Pesa payment initiation failed
+            mpesa_transaction.status = MpesaTransactionStatus.FAILED
+            mpesa_transaction.result_desc = response_data.get('error', 'STK Push failed')
+            mpesa_transaction.mpesa_data = response_data
+            
+            db.session.commit()
+            
+            return jsonify({
+                'success': False,
+                'error': response_data.get('error', 'Failed to initiate M-Pesa payment'),
+                'sale_id': sale.id  # Sale is created but payment failed
+            }), 400
+            
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating sale with M-Pesa: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@sales_bp.route('/sales/<int:sale_id>/complete-mpesa', methods=['POST'])
+@jwt_required()
+def complete_mpesa_sale(sale_id):
+    """Complete a sale after successful M-Pesa payment"""
+    try:
+        sale = Sale.query.get_or_404(sale_id)
+        
+        # Find the associated M-Pesa transaction
+        mpesa_transaction = MpesaTransaction.query.filter_by(
+            sale_id=sale_id,
+            status=MpesaTransactionStatus.COMPLETED
+        ).first()
+        
+        if not mpesa_transaction:
+            return jsonify({'error': 'No completed M-Pesa payment found for this sale'}), 400
+        
+        # Update sale with M-Pesa receipt number
+        sale.payment_reference = mpesa_transaction.mpesa_receipt_number
+        
+        # Update product stock (this was deferred until payment completion)
+        for item in sale.items:
+            product = Product.query.get(item.product_id)
+            if product:
+                product.stock -= item.quantity
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Sale completed successfully',
+            'sale': {
+                'id': sale.id,
+                'receipt_number': sale.receipt_number,
+                'mpesa_receipt': mpesa_transaction.mpesa_receipt_number,
+                'total_amount': float(sale.total_amount)
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error completing M-Pesa sale: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @sales_bp.route('/sales/stats', methods=['GET'])

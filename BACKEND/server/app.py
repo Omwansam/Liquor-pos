@@ -28,6 +28,7 @@ from routes.products_route import products_bp
 from routes.customers_route import customers_bp
 from routes.sales_route import sales_bp
 from routes.inventory_route import inventory_bp
+from routes.mpesa_route import mpesa_bp
 from routes.notifications_route import notifications_bp
 from routes.settings_route import settings_bp
 from routes.suppliers_route import suppliers_bp
@@ -40,6 +41,7 @@ app.register_blueprint(products_bp, url_prefix='/api')
 app.register_blueprint(customers_bp, url_prefix='/api')
 app.register_blueprint(sales_bp, url_prefix='/api')
 app.register_blueprint(inventory_bp, url_prefix='/api')
+app.register_blueprint(mpesa_bp, url_prefix='/api')
 app.register_blueprint(notifications_bp, url_prefix='/api')
 app.register_blueprint(settings_bp, url_prefix='/api')
 app.register_blueprint(suppliers_bp, url_prefix='/api')
