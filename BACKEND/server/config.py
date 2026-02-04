@@ -9,7 +9,8 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 class Config:
     #App Configuration
     SECRET_KEY = os.getenv('SECRET_KEY')
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL','postgresql://omwansa:YnU3Sdb8fnelEed8UbZgxI7swk1NbIDU@dpg-d39no2t6ubrc73e99u60-a.oregon-postgres.render.com/portfoliodb_w4p0')
+    # Prefer DATABASE_URL from environment (.env). Keep a safe local fallback.
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///' + os.path.join(BASE_DIR, 'app.db'))
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
 

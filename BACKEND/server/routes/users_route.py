@@ -205,24 +205,29 @@ def get_users():
 #####################################################################################USER LOGIN##################################################################################################
 @users_bp.route('/login', methods=['POST'])
 def login():
+    """
+    Authenticate by email or username + password.
+    Accepts payload keys:
+      - email (or username)
+      - password
+    """
     try:
         data = request.get_json()
 
-        if not data or not data.get('email') or not data.get('password'):
-            return jsonify({"message": "Email and password are required"}), 400
+        # Support either email or username field (common frontend variants: "identifier")
+        identifier = (data or {}).get('email') or (data or {}).get('username') or (data or {}).get('identifier')
+        password = (data or {}).get('password')
 
-        email = data['email']
-        password = data['password']
+        if not identifier or not password:
+            return jsonify({"message": "Email/username and password are required"}), 400
 
-        user = User.query.filter_by(email=email).first()
-        
+        # Look up by email first, then username
+        user = User.query.filter_by(email=identifier).first()
         if not user:
-            return jsonify({"message": "Invalid email or password"}), 401
+            user = User.query.filter_by(username=identifier).first()
         
-        password_check = user.check_password(password)
-        
-        if not password_check:
-            return jsonify({"message": "Invalid email or password"}), 401
+        if not user or not user.check_password(password):
+            return jsonify({"message": "Invalid email/username or password"}), 401
 
         # Update last_login timestamp and ensure admin role is set correctly
         try:
@@ -398,12 +403,16 @@ def update_admin_role():
 @users_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
-    if not data.get('username') or not data.get('email') or not data.get('password'):
-        return jsonify({"error": "Missing required fields"}), 400
+
+    # Required fields: username, email, password, name (DB enforces name NOT NULL)
+    missing = [field for field in ['username', 'email', 'password', 'name'] if not data.get(field)]
+    if missing:
+        return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
 
     username = data['username']
     email = data['email']
     password = data['password']
+    name = data['name']
     is_admin = data.get('is_admin', False)  # Optional — allow admin creation if set
 
     if User.query.filter_by(email=email).first():
@@ -411,7 +420,13 @@ def register():
 
     password_hash = generate_password_hash(password)
 
-    user = User(username=username, email=email, password_hash=password_hash, is_admin=is_admin)
+    user = User(
+        username=username,
+        email=email,
+        password_hash=password_hash,
+        name=name,
+        is_admin=is_admin
+    )
     try:
         db.session.add(user)
         db.session.commit()
